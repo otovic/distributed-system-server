@@ -5,7 +5,7 @@ import java.net.Socket
 import kotlin.coroutines.*
 
 fun main(args: Array<String>) {
-    val socket = 1337
+    val sockets = intArrayOf(1337, 1338, 1339, 1340, 1341, 1342).toMutableList()
     lateinit var balancer: Socket
     val balancerIP = "192.168.0.107"
     val balancerPort = 12347
@@ -13,27 +13,18 @@ fun main(args: Array<String>) {
     var servers = mutableListOf<Server>()
     var clients = mutableListOf<Client>()
     val clientLock = Any()
+    var chosen = intArrayOf().toMutableList()
 
     try {
-        val balancer = Socket(balancerIP, balancerPort)
-        println("Connecting to balancer")
+        for (i in 0..2) {
+            val random = (0 until sockets.size).random()
+            chosen.add(sockets[random])
+            sockets.removeAt(random)
 
-        val input = BufferedReader(balancer.getInputStream().reader())
-        val output = PrintWriter(balancer.getOutputStream(), true)
-
-        output.println("cf//socket:$socket")
-
-        var response = input.readLine()
-
-        print("Response: $response")
-
-        if (response.equals("rs//connected:success")) {
-            println("Connected to balancer")
             Thread {
                 try {
-
-                    val server = ServerSocket(socket)
-                    println("Server started on port $socket")
+                    val server = ServerSocket(chosen[i])
+                    println("Server started on port ${chosen[i]}")
 
                     while (true) {
                         val client = server.accept()
@@ -47,6 +38,25 @@ fun main(args: Array<String>) {
                     println("Error: ${e.message}")
                 }
             }.start()
+        }
+
+        if (chosen.size != 3) {
+            println("Failed to start servers")
+            return
+        }
+
+        val balancer = Socket(balancerIP, balancerPort)
+        println("Connecting to balancer")
+
+        val input = BufferedReader(balancer.getInputStream().reader())
+        val output = PrintWriter(balancer.getOutputStream(), true)
+
+        output.println("cf//socket:${chosen[0]}:${chosen[1]}:${chosen[2]}")
+
+        var response = input.readLine()
+
+        if (response.equals("rs//connected:success")) {
+            println("Connected to balancer")
         } else {
             println("Failed to connect to balancer")
         }
@@ -60,7 +70,7 @@ fun main(args: Array<String>) {
 
             if (response.startsWith("cf//new_server")) {
                 val splits = response.split(":")
-                val server = Server(splits[1], splits[2].toInt())
+                val server = Server(splits[1], intArrayOf(splits[2].toInt(), splits[3].toInt(), splits[4].toInt()).toMutableList())
                 synchronized(serverLock) {
                     servers.add(server)
                 }
@@ -80,6 +90,8 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
         val clientOutput = PrintWriter(client.getOutputStream(), true)
 
         var message = clientInput.readLine()
+
+        println("Message before: $message")
 
         if (message.startsWith("cf//username")) {
             val splits = message.split(":")
@@ -140,13 +152,38 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
             }
 
             if (message.startsWith("rq//available_people")) {
-                val splits = message.split(":")
-                val server = Server(splits[1], splits[2].toInt())
-                synchronized(serverLock) {
-                    servers.add(server)
+                var available = ""
+                synchronized(clientLock) {
+                    clients.forEach {
+                        if (it.socket != client) {
+                            available += it.username + ":"
+                        }
+                    }
                 }
+                println("Available people: $available")
+                for (i in 0 until servers.size) {
+                    val res = servers[i].sendMessageWithResponse("srq//available_people")
+                    println("Available from another server: $res")
+                    available += res
+                }
+
+                if (available.equals("")) {
+                    available = "none"
+                }
+
+                clientOutput.println("rs//available_people:" + available)
             }
 
+            if (message.startsWith("srq//available_people")) {
+                var available = ""
+                synchronized(clientLock) {
+                    clients.forEach {
+                        available += it.username + ":"
+                    }
+                }
+                clientOutput.println(available)
+                client.close()
+            }
             message = clientInput.readLine()
         }
     } catch (e: Exception) {
