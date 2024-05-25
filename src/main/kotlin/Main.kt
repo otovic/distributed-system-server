@@ -104,11 +104,26 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
             println("Registered client: $username")
         }
 
+        synchronized(clientLock) {
+            var available = ""
+            clients.forEach {
+                if (it.socket != client) {
+                    it.sendMessage("cf//user_joined:${it.username}")
+                }
+            }
+            clientOutput.println("rs//available_people:" + available)
+        }
+
         message = clientInput.readLine()
 
         while (message != null) {
             print("Message: $message")
             if (message == "exit") {
+                break
+            }
+
+            if (message == "end") {
+                throw Exception("Client disconnected")
                 break
             }
 
@@ -184,9 +199,14 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
                 clientOutput.println(available)
                 client.close()
             }
+
+            println("Waiting for message")
             message = clientInput.readLine()
         }
     } catch (e: Exception) {
+        synchronized(clientLock) {
+            clients.removeIf { it.socket == client }
+        }
         client.close()
         println("Error: ${e.message}")
     } finally {
