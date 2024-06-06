@@ -71,10 +71,24 @@ fun main(args: Array<String>) {
             if (response.startsWith("cf//new_server")) {
                 val splits = response.split(":")
                 val server = Server(splits[1], intArrayOf(splits[2].toInt(), splits[3].toInt(), splits[4].toInt()).toMutableList())
+                println("Added new server: ${server.ip}")
                 synchronized(serverLock) {
                     servers.add(server)
                 }
             }
+
+            if (response.startsWith("cf//remove_server")) {
+                val splits = response.split(":")
+                val ip = splits[1]
+
+                synchronized(serverLock) {
+                    println("To remove server: $ip")
+                    servers.removeIf { it.ip == ip }
+                    println("${servers.size} servers left")
+                }
+            }
+
+            response = input.readLine()
         }
     } catch (e: Exception) {
         println("Error: ${e.message}")
@@ -105,6 +119,12 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
                 }
                 clients.add(client)
             }
+
+            synchronized(serverLock) {
+                servers.forEach {
+                    it.sendMessage("scf//user_joined:$username:")
+                }
+            }
             println("Registered client: $username")
         } else if (message.startsWith("scf//chat")) {
             val splits = message.split(":")
@@ -121,8 +141,49 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
             }
 
             client.close()
+
+        } else if (message.startsWith("srq//available_people")) {
+            var available = ""
+            synchronized(clientLock) {
+                clients.forEach {
+                    if (it.socket != client) {
+                        available += it.username + ":"
+                    }
+                }
+            }
+
+            if (available.equals("")) {
+                available = "none:"
+            }
+
+            println("Available people sent to server: $available")
+
+            clientOutput.println(available)
+            client.close()
+        } else if (message.startsWith("scf//user_joined")) {
+            val splits = message.split(":")
+            val username = splits[1]
+
+            synchronized(clientLock) {
+                clients.forEach {
+                    if (it.socket != client) {
+                        it.sendMessage("cf//user_joined:$username:")
+                    }
+                }
+            }
+        } else if (message.startsWith("scf//user_left")) {
+            val splits = message.split(":")
+            val username = splits[1]
+
+            synchronized(clientLock) {
+                clients.forEach {
+                    if (it.socket != client) {
+                        it.sendMessage("cf//user_left:$username:")
+                    }
+                }
+            }
         } else {
-            throw Exception("Invalid message")
+            println("Invalid message: $message")
         }
 
         message = clientInput.readLine()
@@ -137,6 +198,18 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
                 throw Exception("Client disconnected")
                 break
             }
+
+//            if(message.startsWith("cf//new_server")) {
+//                val splits = message.split(":")
+//                val server = Server(
+//                    splits[1],
+//                    intArrayOf(splits[2].toInt(), splits[3].toInt(), splits[4].toInt()).toMutableList()
+//                )
+//                synchronized(serverLock) {
+//                    servers.add(server)
+//                    println("Added new server: ${server.ip}")
+//                }
+//            }
 
             if (message.startsWith("cf//chat")) {
                 val splits = message.split(":")
@@ -156,10 +229,12 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
                 }
 
                 if (!found) {
+                    println("Sending to servers")
                     synchronized(serverLock) {
                         servers.forEach {
                             it.sendMessage("scf//chat:$from:$to:$message:")
                         }
+
                     }
                 }
             }
@@ -181,26 +256,10 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
                 if (!found) {
                     synchronized(serverLock) {
                         servers.forEach {
-                            it.sendMessage("s" + message)
+                            it.sendMessage("scf//chat_receive:" + message)
                         }
                     }
                 }
-            }
-
-            if (message.startsWith("ssm//send_message")) {
-                val splits = message.split(":")
-                val username = splits[1]
-                val message = splits[2]
-
-                synchronized(clientLock) {
-                    clients.forEach {
-                        if (it.username.equals(username)) {
-                            it.sendMessage(message)
-                        }
-                    }
-                }
-
-                client.close()
             }
 
             if (message.startsWith("rq//available_people")) {
@@ -214,6 +273,7 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
                 }
                 println("Available people: $available")
                 for (i in 0 until servers.size) {
+                    println("Sending request to server: ${servers[i].ip}")
                     val res = servers[i].sendMessageWithResponse("srq//available_people")
                     println("Available from another server: $res")
                     available += res
@@ -241,11 +301,17 @@ fun handleClient(client: Socket, clients: MutableList<Client>, clientLock: Any, 
             message = clientInput.readLine()
         }
     } catch (e: Exception) {
+        val clientInfo = clients.find { it.socket == client }
+        val username = clientInfo?.username ?: ""
         synchronized(clientLock) {
-            val clientInfo = clients.find { it.socket == client }
-            val username = clientInfo?.username ?: ""
             clients.removeIf { it.socket == client }
             clients.forEach { it.sendMessage("cf//user_left:$username:") }
+        }
+
+        synchronized(serverLock) {
+            servers.forEach {
+                it.sendMessage("scf//user_left:$username:")
+            }
         }
         client.close()
         println("Error: ${e.message}")
